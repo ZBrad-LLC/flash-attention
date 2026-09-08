@@ -73,12 +73,12 @@ RELEASE_TITLE="flash_attn ${WHEEL_VERSION} — ${GPU_TUNED_HW_LABEL} wheel"
 echo ""
 echo "Publishing wheel to GitHub release ${RELEASE_TAG}..."
 gh release create "${RELEASE_TAG}" \
-    --repo zbrad/flash-attention \
+    --repo zbrad-llc/flash-attention \
     --title "${RELEASE_TITLE}" \
     --target "tuned-builds" \
     --notes "flash_attn ${WHEEL_VERSION} wheel for ${GPU_TUNED_HW_LABEL}, single-arch (FLASH_ATTN_CUDA_ARCHS=${GPU_TUNED_FA_ARCH})." \
     "${WHEEL}#$(basename "${WHEEL}")"
 
 echo ""
-echo "Release: https://github.com/zbrad/flash-attention/releases/tag/${RELEASE_TAG}"
+echo "Release: https://github.com/ZBrad-LLC/flash-attention/releases/tag/${RELEASE_TAG}"
 echo "Done."
