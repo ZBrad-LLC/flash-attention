@@ -79,5 +79,5 @@ echo "[tuned/env] GPU_TUNED_VARIANT=${GPU_TUNED_VARIANT} FLASH_ATTN_CUDA_ARCHS=$
 embed_build_info() {
     local so_path="$1" variant="$2" package="$3" version="$4" hw_label="$5"
     gpu_tuned_embed_build_info "${so_path}" "${variant}" "${package}" "${version}" \
-        "${hw_label}" "https://github.com/zbrad/flash-attention" "flash_attn_build_info"
+        "${hw_label}" "https://github.com/ZBrad-LLC/flash-attention" "flash_attn_build_info"
 }
