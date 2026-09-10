@@ -64,7 +64,7 @@ WHEEL="$(ls "${REPO_ROOT}"/dist/flash_attn-*.whl 2>/dev/null | head -1)"
 [[ -z "${WHEEL}" ]] && { echo "ERROR: no wheel found in dist/" >&2; exit 1; }
 echo "Built wheel: $(basename "${WHEEL}") ($(du -sh "${WHEEL}" | awk '{print $1}'))"
 
-WHEEL_VERSION="$(basename "${WHEEL}" | sed -E 's/^flash_attn-([^-]+)-.*/\1/')"
+WHEEL_VERSION="$(gpu_tuned_wheel_version "${WHEEL}" flash_attn)" || exit 1
 WHEEL_BASE_VERSION="${WHEEL_VERSION%%+*}"
 
 RELEASE_TAG="v${WHEEL_BASE_VERSION}-${GPU_TUNED_VARIANT}-cu${CUDA_VERSION_COMPACT}"
