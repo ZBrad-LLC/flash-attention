@@ -73,9 +73,11 @@ WHEEL="$(ls "${REPO_ROOT}"/dist/flash_attn-*.whl 2>/dev/null | head -1)"
 echo "Built wheel: $(basename "${WHEEL}") ($(du -sh "${WHEEL}" | awk '{print $1}'))"
 
 WHEEL_VERSION="$(gpu_tuned_wheel_version "${WHEEL}" flash_attn)" || exit 1
-WHEEL_BASE_VERSION="${WHEEL_VERSION%%+*}"
-
-RELEASE_TAG="v${WHEEL_BASE_VERSION}-${GPU_TUNED_VARIANT}-cu${CUDA_VERSION_COMPACT}"
+# WHEEL_VERSION already includes the full "+FLASH_ATTN_LOCAL_VERSION" local
+# segment (variant, cuda tag, and now tuning-vN) -- use it directly rather
+# than stripping and re-appending only part of it, which would silently
+# drop tuning-vN from the tag while it stayed visible in the title below.
+RELEASE_TAG="v${WHEEL_VERSION}"
 RELEASE_TITLE="flash_attn ${WHEEL_VERSION} — ${GPU_TUNED_HW_LABEL} wheel"
 
 echo ""
