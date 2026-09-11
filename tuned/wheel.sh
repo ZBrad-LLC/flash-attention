@@ -31,7 +31,15 @@ source "${VENV_DIR}/bin/activate"
 # multiple tuned variants at the same CUDA version don't collide on an
 # identical wheel filename (same convention as every other repo's
 # wheel.sh this session).
-export FLASH_ATTN_LOCAL_VERSION="${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}"
+#
+# tuning-vN = commits on tuned-builds since it diverged from main (i.e.
+# commits ahead of upstream/Dao-AILab) -- same convention adopted
+# fleet-wide from zbrad/pytorch's tuned/wheel.sh: the static __version__
+# above only moves when upstream bumps it, so on its own it can't say
+# "how much of our own tuned-builds work landed since an earlier wheel
+# was built."
+TUNED_COMMIT_COUNT="$(git rev-list --count main..HEAD)"
+export FLASH_ATTN_LOCAL_VERSION="${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}.tuning-v${TUNED_COMMIT_COUNT}"
 
 echo "=========================================="
 echo "Packaging flash_attn wheel (${GPU_TUNED_HW_LABEL})"
