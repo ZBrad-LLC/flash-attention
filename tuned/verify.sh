@@ -21,11 +21,12 @@ cd "${REPO_ROOT}"
 # shellcheck source=env.sh
 source "${REPO_ROOT}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}"
 
-VENV_DIR="${REPO_ROOT}/.venv-${GPU_TUNED_VARIANT}"
+VENV_DIR="${REPO_ROOT}/.venv-${GPU_TUNED_VARIANT}-base"
 [[ -d "${VENV_DIR}" ]] || {
     echo "ERROR: ${VENV_DIR} not found. Run tuned/build.sh ${GPU_TUNED_VARIANT} first." >&2
     exit 1
 }
+gpu_tuned_verify_venv "${VENV_DIR}" "${REPO_ROOT}"
 # shellcheck source=/dev/null
 source "${VENV_DIR}/bin/activate"
 
