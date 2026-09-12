@@ -75,7 +75,7 @@ WHEEL_SO="$(find "${UNPACK_DIR}" -name 'flash_attn_2_cuda*.so' | head -1)"
 [[ -z "${WHEEL_SO}" ]] && { echo "ERROR: flash_attn_2_cuda*.so not found inside ${WHEEL}." >&2; exit 1; }
 gpu_tuned_verify_arch "${WHEEL_SO}" "${GPU_TUNED_FA_ARCH}"
 embed_build_info "${WHEEL_SO}" "${GPU_TUNED_VARIANT}" "flash_attn" "${WHEEL_VERSION}" "${GPU_TUNED_HW_LABEL}"
-gpu_tuned_verify_build_info "${WHEEL_SO}" "flash_attn" "${WHEEL_VERSION}"
+gpu_tuned_verify_build_info "${WHEEL_SO}" "flash_attn" "${WHEEL_VERSION}" "flash_attn_build_info"
 rm -f "${WHEEL}"
 UNPACKED_CONTENT_DIR="$(find "${UNPACK_DIR}" -maxdepth 1 -mindepth 1 -type d)"
 python3 -m wheel pack "${UNPACKED_CONTENT_DIR}" --dest-dir "${REPO_ROOT}/dist"
