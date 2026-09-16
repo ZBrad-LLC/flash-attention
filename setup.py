@@ -350,7 +350,10 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
 
     nvcc_flags = [
     "-O3",
-    "-std=c++17",
+    # zbrad/flash-attention-only: bumped from c++17 -- torch's ATen headers
+    # now require C++20 (hit building against torch 2.15.0's gb10 wheel;
+    # upstream main still hardcodes c++17 here as of this fork's base).
+    "-std=c++20",
     "-U__CUDA_NO_HALF_OPERATORS__",
     "-U__CUDA_NO_HALF_CONVERSIONS__",
     "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -369,11 +372,11 @@ if not SKIP_CUDA_BUILD and not IS_ROCM:
     # "-DFLASHATTENTION_DISABLE_LOCAL",
     ]
 
-    compiler_c17_flag=["-O3", "-std=c++17"]
+    compiler_c17_flag=["-O3", "-std=c++20"]
     # Add Windows-specific flags
     if sys.platform == "win32" and os.getenv('DISTUTILS_USE_SDK') == '1':
         nvcc_flags.extend(["-Xcompiler", "/Zc:__cplusplus"])
-        compiler_c17_flag=["-O2", "/std:c++17", "/Zc:__cplusplus"]
+        compiler_c17_flag=["-O2", "/std:c++20", "/Zc:__cplusplus"]
 
     # Opt-in: disable building dropout and its dependent headers (ATen philox/RNG
     # headers) from the FA2 build. This flag must be shared across both cxx and nvcc
