@@ -39,7 +39,7 @@ source "${VENV_DIR}/bin/activate"
 # above only moves when upstream bumps it, so on its own it can't say
 # "how much of our own tuned-builds work landed since an earlier wheel
 # was built."
-TUNED_COMMIT_COUNT="$(git rev-list --count main..HEAD)"
+TUNED_COMMIT_COUNT="$(gpu_tuned_tuning_count)"
 FLASH_ATTN_LOCAL_VERSION="$(gpu_tuned_local_version "${GPU_TUNED_VARIANT}" "${CUDA_VERSION_COMPACT}" "${TUNED_COMMIT_COUNT}")"
 export FLASH_ATTN_LOCAL_VERSION
 
