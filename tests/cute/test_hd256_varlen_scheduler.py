@@ -1,18 +1,19 @@
 """HD256 varlen API, cache, and CUDA-graph regression tests on SM100/SM110.
 
 None and fresh CUDA scalar maxima must share a device-driven specialization
-without host reads; Python integers retain rectangular scheduling.
+without host reads; Python integers retain rectangular scheduling in the backward.
 Set FLASH_ATTENTION_HD256_STRESS=1 for additional randomized cases.
 """
 
 import os
 from functools import partial
-from itertools import accumulate
 from unittest.mock import Mock
 
 import pytest
 import torch
 from torch.utils._python_dispatch import TorchDispatchMode
+
+from eager_reference import check_against_reference, make_cu_seqlens
 
 from flash_attn.cute import flash_attn_varlen_func, interface
 from flash_attn.cute.cache_utils import JITCache
@@ -61,10 +62,6 @@ class RejectHostScalarExtraction(TorchDispatchMode):
         return func(*args, **(kwargs or {}))
 
 
-def make_cu_seqlens(lengths):
-    return torch.tensor((0, *accumulate(lengths)), dtype=torch.int32, device="cuda")
-
-
 def make_maxima(max_mode, q_lens, k_lens, cu_seqlens_q, cu_seqlens_k):
     if max_mode == "none":
         return None, None
@@ -106,77 +103,6 @@ def run_varlen(q, k, v, dout, cu_seqlens_q, cu_seqlens_k, max_seqlen_q, max_seql
     return out.detach(), dq, dk, dv
 
 
-def varlen_reference(q, k, v, dout, q_lens, k_lens, causal, ref_dtype):
-    """Return eager O/dQ/dK/dV in ref_dtype for active rows only.
-
-    Ignore extra input capacity; return only O when dout is None.
-    """
-    scale = q.shape[-1] ** -0.5
-    heads_q, heads_kv = q.shape[1], k.shape[1]
-    qr, kr, vr = [t.detach().to(ref_dtype).requires_grad_(dout is not None) for t in (q, k, v)]
-    outputs = []
-    q_off = k_off = 0
-    for nq, nk in zip(q_lens, k_lens):
-        if nq > 0:
-            assert nk > 0, "a query row with no keys has undefined softmax output"
-            qi = qr[q_off : q_off + nq].transpose(0, 1)
-            ki = (
-                kr[k_off : k_off + nk].transpose(0, 1).repeat_interleave(heads_q // heads_kv, dim=0)
-            )
-            vi = (
-                vr[k_off : k_off + nk].transpose(0, 1).repeat_interleave(heads_q // heads_kv, dim=0)
-            )
-            scores = (qi @ ki.transpose(-1, -2)) * scale
-            if causal:
-                # Bottom-right aligned causal mask, also correct when nq != nk.
-                rows = torch.arange(nq, device=q.device)[:, None]
-                cols = torch.arange(nk, device=q.device)[None, :]
-                scores = scores.masked_fill(cols > rows + nk - nq, float("-inf"))
-            outputs.append((scores.softmax(-1) @ vi).transpose(0, 1))
-        q_off += nq
-        k_off += nk
-    out = torch.cat(outputs)
-    if dout is None:
-        return (out,)
-    dq, dk, dv = torch.autograd.grad(out, (qr, kr, vr), dout[:q_off].to(ref_dtype))
-    return out, dq[:q_off], dk[:k_off], dv[:k_off]
-
-
-def rms(t):
-    return t.square().mean().sqrt()
-
-
-def check_against_reference(actual, q, k, v, dout, q_lens, k_lens, causal, dtype):
-    """Compare O/dQ/dK/dV against FP64 eager, allowing the measured low-precision eager error.
-
-    The fused kernel orders its softmax/reductions differently from eager and
-    rounds P and the accumulator to the output dtype, so on top of the measured
-    unfused low-precision eager error allow two output ULPs (pointwise/max and RMS).
-    """
-    truth = varlen_reference(q, k, v, dout, q_lens, k_lens, causal, torch.float64)
-    eager = varlen_reference(q, k, v, dout, q_lens, k_lens, causal, dtype)
-    assert len(actual) == len(truth) == len(eager) == (1 if dout is None else 4)
-    ulp = torch.finfo(dtype).eps
-    for name, got, want, low in zip(("O", "dQ", "dK", "dV"), actual, truth, eager):
-        assert got.shape == want.shape, (name, got.shape, want.shape)
-        assert torch.isfinite(got).all(), name
-        error = (got.double() - want).abs()
-        eager_error = (low.double() - want).abs()
-        allowance = 2 * ulp * want.abs()
-        assert error.max() <= eager_error.max() + allowance.max(), (
-            name,
-            error.max().item(),
-            eager_error.max().item(),
-            allowance.max().item(),
-        )
-        assert rms(error) <= rms(eager_error) + rms(allowance), (
-            name,
-            rms(error).item(),
-            rms(eager_error).item(),
-            rms(allowance).item(),
-        )
-
-
 # ---------------------------------------------------------------------------
 # Correctness matrix: O/dQ/dK/dV vs FP64 eager for every maxima form.
 # ---------------------------------------------------------------------------
@@ -203,8 +129,88 @@ def test_hd256_varlen_maxima(q_lens, k_lens, dtype, max_mode, causal):
     check_against_reference(second, q, k, v, dout, q_lens, k_lens, causal, dtype)
 
 
+@pytest.mark.parametrize("layout", ["packed", "dense", "packed_q"])
+@pytest.mark.parametrize("used", ["q", "k", "qk"])
+@pytest.mark.parametrize("max_mode", ["none", "int"])
+@pytest.mark.parametrize(
+    "dtype, heads_q, heads_kv",
+    [
+        pytest.param(torch.bfloat16, 4, 1, id="bf16_gqa"),
+        pytest.param(torch.float16, 2, 2, id="fp16_mha"),
+    ],
+)
+@CAUSAL
+def test_hd256_seqused_backward(
+    layout,
+    used,
+    max_mode,
+    dtype,
+    heads_q,
+    heads_kv,
+    causal,
+):
+    """Check seqused outputs and gradients across layouts with static and varlen scheduling."""
+    if layout == "dense" and max_mode == "int":
+        pytest.skip("dense integer maxima match shape-derived defaults in max_mode='none'")
+    torch.manual_seed(SEED)
+    packed_q, packed_k = layout != "dense", layout == "packed"
+    q_capacity = (193, 257, 385) if packed_q else (384,) * 3
+    k_capacity = (577, 513, 641) if packed_k else (640,) * 3
+    q_lens = (65, 0, 257) if "q" in used else q_capacity
+    k_lens = (449, 385, 513) if "k" in used else k_capacity
+    if used == "qk":
+        k_lens = (449, 0, 513)
+    cu_q = make_cu_seqlens(q_capacity) if packed_q else None
+    cu_k = make_cu_seqlens(k_capacity) if packed_k else None
+    used_q = torch.tensor(q_lens, device="cuda", dtype=torch.int32) if "q" in used else None
+    used_k = torch.tensor(k_lens, device="cuda", dtype=torch.int32) if "k" in used else None
+    q_shape = (sum(q_capacity),) if packed_q else (len(q_capacity), q_capacity[0])
+    k_shape = (sum(k_capacity),) if packed_k else (len(k_capacity), k_capacity[0])
+    q = torch.randn(*q_shape, heads_q, HEAD_DIM, device="cuda", dtype=dtype, requires_grad=True)
+    k = torch.randn(*k_shape, heads_kv, HEAD_DIM, device="cuda", dtype=dtype, requires_grad=True)
+    v = torch.randn_like(k, requires_grad=True)
+    dout = torch.randn_like(q)
+
+    out, _ = flash_attn_varlen_func(
+        q,
+        k,
+        v,
+        cu_seqlens_q=cu_q,
+        cu_seqlens_k=cu_k,
+        seqused_q=used_q,
+        seqused_k=used_k,
+        max_seqlen_q=max(q_capacity) if max_mode != "none" else None,
+        max_seqlen_k=max(k_capacity) if max_mode != "none" else None,
+        causal=causal,
+    )
+    dq, dk, dv = torch.autograd.grad(out, (q, k, v), dout)
+    torch.cuda.synchronize()
+
+    def compact(t, capacity, lengths):
+        batches = t.split(capacity) if t.ndim == 3 else t.unbind(0)
+        return torch.cat([batch[:length] for batch, length in zip(batches, lengths)])
+
+    actual = (
+        compact(out.detach(), q_capacity, q_lens),
+        compact(dq, q_capacity, q_lens),
+        compact(dk, k_capacity, k_lens),
+        compact(dv, k_capacity, k_lens),
+    )
+    check_against_reference(
+        actual,
+        compact(q, q_capacity, q_lens),
+        compact(k, k_capacity, k_lens),
+        compact(v, k_capacity, k_lens),
+        compact(dout, q_capacity, q_lens),
+        q_lens,
+        k_lens,
+        causal,
+        dtype,
+    )
+
+
 # ---------------------------------------------------------------------------
-# Compile-key behaviour: none/cuda share one specialization, int selects another.
+# Compile-key behaviour: none/cuda share one specialization; int adds a backward one.
 # ---------------------------------------------------------------------------
 
 
@@ -238,8 +244,10 @@ def test_hd256_varlen_maxima_compile_keys(causal, monkeypatch):
 
     by_mode["int"] = run("int")
     torch.cuda.synchronize()
-    assert (len(fwd_cache.cache), len(bwd_cache.cache)) == (2, 2), (
-        "explicit int maxima should select a distinct specialization"
+    # The forward reads lengths on device and does not specialize on the maxima; the hd256
+    # backward still selects a separate specialization for explicit int maxima.
+    assert (len(fwd_cache.cache), len(bwd_cache.cache)) == (1, 2), (
+        "explicit int maxima should select a distinct backward specialization only"
     )
     assert all(
         not torch.is_tensor(value)
@@ -356,8 +364,37 @@ def test_generic_varlen_no_max_shares_flat_scheduler_key(monkeypatch):
     check_against_reference((out_none,), q, k, v, None, q_lens, k_lens, False, dtype)
 
 
+def test_generic_paged_seqused_cuda_maxima_use_host_bounds():
+    """Paged SplitKV scheduler bounds must not require host reads of CUDA maxima."""
+    torch.manual_seed(SEED)
+    dtype, head_dim = torch.bfloat16, 128
+    q = torch.randn(2, 128, 4, head_dim, device="cuda", dtype=dtype)
+    k = torch.randn(6, 128, 1, head_dim, device="cuda", dtype=dtype)
+    v = torch.randn_like(k)
+    pages = torch.tensor([[3, 0], [5, 1]], device="cuda", dtype=torch.int32)
+    seqused_q = torch.full((2,), 128, device="cuda", dtype=torch.int32)
+
+    def forward():
+        return flash_attn_varlen_func(
+            q, k, v, page_table=pages, seqused_q=seqused_q, num_splits=3,
+            max_seqlen_q=seqused_q.max(),
+            max_seqlen_k=torch.tensor(256, device="cuda", dtype=torch.int32),
+        )[0]
+
+    forward()
+    with RejectHostScalarExtraction():
+        out = forward()
+    packed_k = k[pages].reshape(512, 1, head_dim)
+    packed_v = v[pages].reshape_as(packed_k)
+    check_against_reference(
+        (out.flatten(0, 1),), q.flatten(0, 1), packed_k, packed_v, None, (128, 128), (256, 256),
+        False, dtype,
+    )
+
+
+@pytest.mark.parametrize("num_splits", [1, 3])
 @MAX_MODES
-def test_hd256_paged_maximum_uses_table_extent(max_mode):
+def test_hd256_paged_maximum_uses_table_extent(max_mode, num_splits):
     torch.manual_seed(SEED)
     dtype = torch.bfloat16
     q = torch.randn(2, 128, 4, HEAD_DIM, device="cuda", dtype=dtype)
@@ -368,8 +405,15 @@ def test_hd256_paged_maximum_uses_table_extent(max_mode):
     if max_mode == "cuda":
         maximum = torch.tensor(256, device="cuda", dtype=torch.int32)
 
+    # Exercise used-length hints with explicit splits.
+    seqused_q = torch.full((2,), 128, device="cuda", dtype=torch.int32) if num_splits > 1 else None
+
     def forward():
-        return flash_attn_varlen_func(q, k, v, page_table=pages, max_seqlen_k=maximum)[0]
+        max_q = seqused_q.max() if seqused_q is not None and max_mode == "cuda" else None
+        return flash_attn_varlen_func(
+            q, k, v, page_table=pages, max_seqlen_q=max_q, max_seqlen_k=maximum,
+            seqused_q=seqused_q, num_splits=num_splits,
+        )[0]
 
     forward()
     with RejectHostScalarExtraction():
