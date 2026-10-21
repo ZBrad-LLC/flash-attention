@@ -23,6 +23,18 @@ source "${REPO_ROOT}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}"
     echo "ERROR: ${GPU_TUNED_VENV_DIR} not found. Run CUDA_TAG=${CUDA_TAG} bash tuned/build.sh ${GPU_TUNED_VARIANT} (it prepares the build venv, then calls this script)." >&2
     exit 1
 }
+# The venv's torch is built for one CUDA release; compiling against another toolkit would label a wheel cu<X> that
+# links a cu<Y> torch, and every later gate runs in this same venv and would pass. Refuse before anything compiles.
+VENV_TORCH_CUDA="$("${GPU_TUNED_VENV_DIR}/bin/python" -c 'import torch; print(torch.version.cuda)' 2>/dev/null | tail -1)"
+[[ -n "${VENV_TORCH_CUDA}" ]] || {
+    echo "ERROR: no importable torch in ${GPU_TUNED_VENV_DIR}; tuned/build.sh installs or checks it." >&2
+    exit 1
+}
+[[ "${VENV_TORCH_CUDA}" == "${CUDA_VER}" ]] || {
+    echo "ERROR: ${GPU_TUNED_VENV_DIR} holds a torch built for CUDA ${VENV_TORCH_CUDA}, but ${CUDA_TAG} is CUDA ${CUDA_VER}." >&2
+    echo "       Build with the toolkit torch was built for (CUDA_TAG=cu${VENV_TORCH_CUDA//./}), or use a venv with a torch for ${CUDA_TAG}." >&2
+    exit 1
+}
 gpu_tuned_verify_venv "${GPU_TUNED_VENV_DIR}" "${REPO_ROOT}"
 # shellcheck source=/dev/null
 source "${GPU_TUNED_VENV_DIR}/bin/activate"
