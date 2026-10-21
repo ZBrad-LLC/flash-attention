@@ -43,3 +43,6 @@ benchmarks/results/
 flash_attn_config.py
 # but keep the committed package shim that re-exports it
 !hopper/flash_attn_3/flash_attn_config.py
+
+# Tuned builds: one tree per CUDA toolkit (tuned/env.sh)
+/tuned/build/

@@ -60,7 +60,7 @@ own comment on `FA2_TUNED_ARCH`).
 
 Added a second, separate arch code -- `"121a"` -- to
 `add_cuda_gencodes()`, additive on top of (not replacing) #2257's `"121"`
-branch: `-gencode arch=compute_121a,code=sm_121a`. `tuned/devices/gb10.conf`
+branch: `-gencode arch=compute_121a,code=sm_121a`. `tuned/repo.env`
 requests `"121a"` via `GPU_TUNED_FA_ARCH`; upstream's own default archs
 list (and anyone building this fork with a bare `FLASH_ATTN_CUDA_ARCHS`
 containing `"121"`) is untouched and still gets the portable `121f` build.
