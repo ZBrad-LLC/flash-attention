@@ -1,106 +1,74 @@
 #!/bin/bash
-# tuned/wheel.sh <variant> — package a built flash_attn tree into a wheel
-# and publish it as a real GitHub release. Requires tuned/build.sh
-# <variant> to have already succeeded (this reuses that venv, does not
-# rebuild).
+# tuned/wheel.sh <variant> — make the unstamped flash_attn wheel for one GPU variant and one CUDA toolkit, into
+# tuned/build/<cuda-tag>/wheel/, and record the release label and the build commit. This is the wheel step of
+# tuned/build.sh, which prepares the build venv first; it refuses to run without that venv. It never publishes,
+# tests or packages (package.sh stamps a copy, H3).
+#
+#   CUDA_TAG=cu134 bash tuned/wheel.sh gb10     (normally run by tuned/build.sh)
+#
+# The release label (E3/E4) is allocated here, once: HEAD's UTC commit date and the lowest unused sequence among
+# origin's tags. setup.py puts it in the wheel's local version through FLASH_ATTN_LOCAL_VERSION. release-label and
+# build-commit are written last, so their presence means the build finished. package.sh reads the label and never
+# recomputes it: the release-notes commit moves HEAD and its date.
 set -euo pipefail
 
-GPU_TUNED_ARG_VARIANT="$1"
+GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/wheel.sh <variant>}"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 # shellcheck source=env.sh
 source "${REPO_ROOT}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}"
 
-VENV_DIR="${REPO_ROOT}/.venv-${GPU_TUNED_VARIANT}-base"
-[[ -d "${VENV_DIR}" ]] || {
-    echo "ERROR: ${VENV_DIR} not found. Run tuned/build.sh ${GPU_TUNED_VARIANT} first." >&2
+[[ -d "${GPU_TUNED_VENV_DIR}" ]] || {
+    echo "ERROR: ${GPU_TUNED_VENV_DIR} not found. Run CUDA_TAG=${CUDA_TAG} bash tuned/build.sh ${GPU_TUNED_VARIANT} (it prepares the build venv, then calls this script)." >&2
     exit 1
 }
-gpu_tuned_verify_venv "${VENV_DIR}" "${REPO_ROOT}"
+gpu_tuned_verify_venv "${GPU_TUNED_VENV_DIR}" "${REPO_ROOT}"
 # shellcheck source=/dev/null
-source "${VENV_DIR}/bin/activate"
+source "${GPU_TUNED_VENV_DIR}/bin/activate"
 
-[[ -n "${CUDA_VERSION_COMPACT:-}" ]] || {
-    echo "ERROR: CUDA_VERSION_COMPACT not set (CUDA_HOME must resolve to a" \
-         "/usr/local/cuda-X.Y directory) -- cannot derive the version string." >&2
+LOCAL_VERSION="$(gpu_tuned_build_local_version "${GPU_TUNED_VARIANT}" "${REPO_ROOT}")" || exit 1
+[[ "${LOCAL_VERSION}" == "${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}."* ]] || {
+    echo "ERROR: label ${LOCAL_VERSION} disagrees with ${CUDA_TAG} (from ${CUDA_HOME}); nvcc and the toolkit definition must report the same release." >&2
     exit 1
 }
+LABEL="${LOCAL_VERSION#*.cu${CUDA_VERSION_COMPACT}.}"
+export FLASH_ATTN_LOCAL_VERSION="${LOCAL_VERSION}"
+echo "Release label: ${LABEL} (local version ${LOCAL_VERSION})"
 
-# setup.py's get_package_version() reads __version__ from flash_attn/__init__.py
-# and appends "+FLASH_ATTN_LOCAL_VERSION" when set -- set it explicitly so
-# multiple tuned variants at the same CUDA version don't collide on an
-# identical wheel filename (same convention as every other repo's
-# wheel.sh this session).
-#
-# The label is <variant>.cu<NNN>.<YYYYMMDD>[.<seq>] (date of HEAD plus the lowest
-# sequence unused among the tags on origin), allocated by tuned-common; it replaces
-# the old tuning.<N> commit counter. The cu<NNN> it reads from nvcc must agree
-# with the CUDA_HOME env.sh resolved, or the wheel would be mislabelled.
-FLASH_ATTN_LOCAL_VERSION="$(gpu_tuned_build_local_version "${GPU_TUNED_VARIANT}" "${REPO_ROOT}" origin)"
-[[ "${FLASH_ATTN_LOCAL_VERSION}" == "${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}."* ]] || {
-    echo "ERROR: label ${FLASH_ATTN_LOCAL_VERSION} does not carry cu${CUDA_VERSION_COMPACT}" \
-         "(nvcc on PATH disagrees with CUDA_HOME=${CUDA_HOME:-<unset>})." >&2
+# Remove the previous build's markers first: they are rewritten only if this build succeeds.
+rm -f "${GPU_TUNED_BUILD_ROOT}/build-commit" "${GPU_TUNED_BUILD_ROOT}/release-label"
+mkdir -p "${GPU_TUNED_WHEEL_DIR}"
+rm -f "${GPU_TUNED_WHEEL_DIR}"/flash_attn-*.whl
+
+echo "=========================================="
+echo "Building flash_attn wheel for ${GPU_TUNED_HW_LABEL}"
+echo "=========================================="
+echo "FLASH_ATTN_CUDA_ARCHS: ${FLASH_ATTN_CUDA_ARCHS}"
+echo "CUDA_HOME:             ${CUDA_HOME}"
+echo "MAX_JOBS:              ${MAX_JOBS:-<auto>} (NVCC_THREADS=${NVCC_THREADS:-<auto>})"
+echo "Python:                $(python3 --version)"
+echo "Git commit:            $(git rev-parse --short HEAD)"
+
+python3 -m build --wheel --no-isolation --outdir "${GPU_TUNED_WHEEL_DIR}" "${REPO_ROOT}"
+
+WHEEL="$(ls "${GPU_TUNED_WHEEL_DIR}"/flash_attn-*.whl 2>/dev/null | head -1)"
+[[ -n "${WHEEL}" ]] || { echo "ERROR: no wheel found in ${GPU_TUNED_WHEEL_DIR}" >&2; exit 1; }
+VERSION="$(gpu_tuned_wheel_version "${WHEEL}" flash_attn)" || exit 1
+[[ "${VERSION}" == *"+${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}.${LABEL}" ]] || {
+    echo "ERROR: $(basename "${WHEEL}") is version ${VERSION}, not carrying +${GPU_TUNED_VARIANT}.cu${CUDA_VERSION_COMPACT}.${LABEL} from the release label." >&2
     exit 1
 }
-export FLASH_ATTN_LOCAL_VERSION
-
-echo "=========================================="
-echo "Packaging flash_attn wheel (${GPU_TUNED_HW_LABEL})"
-echo "=========================================="
-echo "FLASH_ATTN_LOCAL_VERSION: ${FLASH_ATTN_LOCAL_VERSION}"
-echo ""
-
-pip install --upgrade build wheel
-rm -rf "${REPO_ROOT}/dist"
-python3 -m build --wheel --no-isolation "${REPO_ROOT}"
-
-WHEEL="$(ls "${REPO_ROOT}"/dist/flash_attn-*.whl 2>/dev/null | head -1)"
-[[ -z "${WHEEL}" ]] && { echo "ERROR: no wheel found in dist/" >&2; exit 1; }
+gpu_tuned_check_wheel_label "${WHEEL}"
 echo "Built wheel: $(basename "${WHEEL}") ($(du -sh "${WHEEL}" | awk '{print $1}'))"
 
-WHEEL_VERSION="$(gpu_tuned_wheel_version "${WHEEL}" flash_attn)" || exit 1
-
-# flash_attn_2_cuda.*.so is where the actual device code lands -- verify +
-# stamp it here, on the wheel's OWN contents, not a pre-build copy: a
-# separate packaging invocation (python -m build) may rebuild/relink
-# rather than reuse an already-stamped file byte-for-byte -- confirmed
-# for pytorch's equivalent build this session (a test marker stamped
-# before the build was completely absent afterward; see
-# gpu_tuned_verify_build_info's header comment). Applying the same
-# proven-safe pattern here rather than assuming setuptools' incremental
-# behavior is different in a way that happens to help. Unpack -> stamp ->
-# repack regenerates RECORD correctly, unlike a raw zip edit.
-echo "Stamping build-info into the wheel's own flash_attn_2_cuda*.so"
-UNPACK_DIR="$(mktemp -d)"
-python3 -m wheel unpack "${WHEEL}" --dest "${UNPACK_DIR}"
-WHEEL_SO="$(find "${UNPACK_DIR}" -name 'flash_attn_2_cuda*.so' | head -1)"
-[[ -z "${WHEEL_SO}" ]] && { echo "ERROR: flash_attn_2_cuda*.so not found inside ${WHEEL}." >&2; exit 1; }
-gpu_tuned_verify_arch "${WHEEL_SO}" "${GPU_TUNED_FA_ARCH}"
-embed_build_info "${WHEEL_SO}" "${GPU_TUNED_VARIANT}" "flash_attn" "${WHEEL_VERSION}" "${GPU_TUNED_HW_LABEL}"
-gpu_tuned_verify_build_info "${WHEEL_SO}" "flash_attn" "${WHEEL_VERSION}" "flash_attn_build_info"
-rm -f "${WHEEL}"
-UNPACKED_CONTENT_DIR="$(find "${UNPACK_DIR}" -maxdepth 1 -mindepth 1 -type d)"
-python3 -m wheel pack "${UNPACKED_CONTENT_DIR}" --dest-dir "${REPO_ROOT}/dist"
-rm -rf "${UNPACK_DIR}"
-WHEEL="$(ls "${REPO_ROOT}"/dist/flash_attn-*.whl 2>/dev/null | head -1)"
-echo "Re-packed with build-info stamp: $(basename "${WHEEL}")"
-# WHEEL_VERSION already includes the full "+FLASH_ATTN_LOCAL_VERSION" local
-# segment (variant, cuda tag, date label) -- use it directly rather than
-# stripping and re-appending only part of it.
-# Friendly title only -- RELEASE_TAG stays the exact WHEEL_VERSION.
-GIT_SHA="$(git rev-parse --short HEAD)"
-WHEEL_BASE_VERSION="${WHEEL_VERSION%%+*}"
-
-RELEASE_TAG="v${WHEEL_VERSION}"
-RELEASE_TITLE="flash_attn ${WHEEL_BASE_VERSION} — ${WHEEL_VERSION#*+} (${GIT_SHA}) — ${GPU_TUNED_HW_LABEL} wheel"
+# build-commit: the source the wheel was made from. A dirty tree is recorded as such and package.sh refuses it.
+BUILD_COMMIT="$(git rev-parse HEAD)"
+[[ -z "$(git status --porcelain --untracked-files=no)" ]] || BUILD_COMMIT="${BUILD_COMMIT}-dirty"
+printf '%s\n' "${LABEL}" > "${GPU_TUNED_BUILD_ROOT}/release-label"
+printf '%s\n' "${BUILD_COMMIT}" > "${GPU_TUNED_BUILD_ROOT}/build-commit"
 
 echo ""
-echo "Publishing wheel to GitHub release ${RELEASE_TAG}..."
-gpu_tuned_publish_release "zbrad-llc/flash-attention" "${RELEASE_TAG}" "${RELEASE_TITLE}" \
-    "flash_attn ${WHEEL_VERSION} wheel for ${GPU_TUNED_HW_LABEL}, single-arch (FLASH_ATTN_CUDA_ARCHS=${GPU_TUNED_FA_ARCH})." \
-    "${WHEEL}#$(basename "${WHEEL}")"
-
-echo ""
-echo "Release: https://github.com/ZBrad-LLC/flash-attention/releases/tag/${RELEASE_TAG}"
-echo "Done."
+echo "Wheel:        ${WHEEL}"
+echo "Label:        ${LABEL}"
+echo "Build commit: ${BUILD_COMMIT}"

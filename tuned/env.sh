@@ -23,7 +23,7 @@
 # Exported: GPU_TUNED_VARIANT/PLATFORM/CUDA_ARCH/HW_LABEL (shared), GPU_TUNED_FA_ARCH
 # (repo.env), CUDA_HOME/CUDA_TAG/CUDA_VER (the toolkit), CUDA_VERSION_COMPACT,
 # FLASH_ATTN_CUDA_ARCHS, GPU_TUNED_BUILD_ROOT (tuned/build/<cuda-tag>), and
-# GPU_TUNED_WHEEL_DIR / GPU_TUNED_DIST_DIR / GPU_TUNED_RELEASES_DIR under it.
+# GPU_TUNED_VENV_DIR, GPU_TUNED_WHEEL_DIR / GPU_TUNED_DIST_DIR / GPU_TUNED_RELEASES_DIR under it.
 
 GPU_TUNED_ARG_VARIANT="${1:-}"
 if [[ -z "${GPU_TUNED_ARG_VARIANT}" ]]; then
@@ -72,10 +72,12 @@ GPU_TUNED_REPO_ROOT="$(cd "${GPU_TUNED_SELF_DIR}/.." && pwd)"
 # A tree last used by another variant is refused, never mixed (gpu_tuned_claim_toolkit_tree).
 gpu_tuned_claim_toolkit_tree "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 GPU_TUNED_BUILD_ROOT="${GPU_TUNED_REPO_ROOT}/tuned/build/${CUDA_TAG}"
+# The venv stays at the repo root (not in the build tree) so existing venvs keep their torch install.
+GPU_TUNED_VENV_DIR="${GPU_TUNED_REPO_ROOT}/.venv-${GPU_TUNED_VARIANT}-base"
 GPU_TUNED_WHEEL_DIR="${GPU_TUNED_BUILD_ROOT}/wheel"
 GPU_TUNED_DIST_DIR="$(gpu_tuned_out_dir dist "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}")"
 GPU_TUNED_RELEASES_DIR="$(gpu_tuned_out_dir releases "${GPU_TUNED_REPO_ROOT}" "${CUDA_TAG}")"
-export GPU_TUNED_BUILD_ROOT GPU_TUNED_WHEEL_DIR GPU_TUNED_DIST_DIR GPU_TUNED_RELEASES_DIR
+export GPU_TUNED_BUILD_ROOT GPU_TUNED_VENV_DIR GPU_TUNED_WHEEL_DIR GPU_TUNED_DIST_DIR GPU_TUNED_RELEASES_DIR
 
 export FLASH_ATTN_CUDA_ARCHS="${GPU_TUNED_FA_ARCH}"
 # Force a real compile -- setup.py's CachedWheelsCommand otherwise tries a
@@ -89,12 +91,3 @@ export FLASH_ATTENTION_FORCE_BUILD=TRUE
 export FLASH_ATTN_NO_PTX=TRUE
 
 echo "[tuned/env] GPU_TUNED_VARIANT=${GPU_TUNED_VARIANT} FLASH_ATTN_CUDA_ARCHS=${FLASH_ATTN_CUDA_ARCHS} CUDA_HOME=${CUDA_HOME} tree=${GPU_TUNED_BUILD_ROOT}"
-
-# embed_build_info <so_path> <variant> <package> <version> [hw_label] —
-# thin wrapper over gpu_tuned_embed_build_info (common.sh), pinning the
-# section name to .flash_attn_build_info.
-embed_build_info() {
-    local so_path="$1" variant="$2" package="$3" version="$4" hw_label="$5"
-    gpu_tuned_embed_build_info "${so_path}" "${variant}" "${package}" "${version}" \
-        "${hw_label}" "https://github.com/ZBrad-LLC/flash-attention" "flash_attn_build_info"
-}
