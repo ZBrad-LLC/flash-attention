@@ -76,6 +76,8 @@ python3 -c "import torch; print(f'Using torch {torch.__version__} (CUDA {torch.v
 
 echo "Installing other build-time requirements (psutil, packaging, setuptools, wheel, ninja, build)..."
 pip install psutil packaging "setuptools>=49.4.0" wheel ninja einops build
+# The current setuptools, installed last so nothing above can hold it back (C8, tuned-common).
+gpu_tuned_install_setuptools || exit 1
 
 echo ""
 bash "${REPO_ROOT}/tuned/wheel.sh" "${GPU_TUNED_VARIANT}"
