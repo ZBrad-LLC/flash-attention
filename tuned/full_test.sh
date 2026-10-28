@@ -84,7 +84,7 @@ import flash_attn, flash_attn_2_cuda
 print("flash_attn: " + flash_attn.__file__)
 print("flash_attn_2_cuda: " + flash_attn_2_cuda.__file__)
 ') || rc=1
-    so="$(cd "${TESTDIR}" && "${PY}" -I -c 'import flash_attn_2_cuda as m; print(m.__file__)' 2>/dev/null | tail -1)"
+    so="$(cd "${TESTDIR}" && "${PY}" -I -c 'import torch, flash_attn_2_cuda as m; print(m.__file__)' 2>/dev/null | tail -1)"
     if [[ "${so}" == "${SITE_DIR}/"* ]]; then echo "  ok:   flash_attn_2_cuda is the wheel's: ${so}"
     else echo "  FAIL: flash_attn_2_cuda loads from '${so}', not from ${SITE_DIR}"; return 1; fi
     if gpu_tuned_verify_toolkit_libs "${so}"; then echo "  ok:   toolkit libraries resolve under ${CUDA_HOME}"
